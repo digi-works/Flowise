@@ -4,7 +4,6 @@ import { useSelector } from 'react-redux'
 import moment from 'moment'
 import { styled } from '@mui/material/styles'
 import {
-    Box,
     Chip,
     Paper,
     Skeleton,
@@ -24,7 +23,6 @@ import { tableCellClasses } from '@mui/material/TableCell'
 import CustomAssitantListMenu from './CustomAssitantListMenu'
 import { Link } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
-import MoreItemsTooltip from './MoreItemsTooltip'
 
 const StyledTableCell = styled(TableCell)(({ theme }) => ({
     borderColor: theme.palette.grey[900] + 25,
@@ -40,8 +38,6 @@ const getLocalStorageKeyName = (name) => 'assistant_' + name
 
 function CustomAssistantTable({
     data,
-    images = {},
-    icons = {},
     isLoading,
     filterFunction = (row) => true,
     updateAssistantsApi,
@@ -90,7 +86,7 @@ function CustomAssistantTable({
         const category = JSON.parse(row.details)?.category
         return category ? category.split(';') : []
     }
-    const getRowImages = (row) => (row.iconSrc ? [{ imageSrc: row.iconSrc }] : [])
+    const getRowDescription = (row) => JSON.parse(row.details)?.description || ''
 
     return (
         <TableContainer sx={{ border: 1, borderColor: theme.palette.grey[900] + 25, borderRadius: 2 }} component={Paper}>
@@ -162,38 +158,20 @@ function CustomAssistantTable({
                                     </Stack>
                                 </StyledTableCell>
                                 <StyledTableCell>
-                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                        {getRowImages(row)
-                                            .slice(0, 5)
-                                            .map((item, idx) => (
-                                                <Tooltip key={idx} title={item.label || ''} placement='top'>
-                                                    <Box
-                                                        sx={{
-                                                            width: 30,
-                                                            height: 30,
-                                                            borderRadius: '50%',
-                                                            backgroundColor: customization.isDarkMode
-                                                                ? theme.palette.common.white
-                                                                : theme.palette.grey[300] + 75,
-                                                            display: 'flex',
-                                                            alignItems: 'center',
-                                                            justifyContent: 'center',
-                                                            overflow: 'hidden'
-                                                        }}
-                                                    >
-                                                        {item.imageSrc && <img src={item.imageSrc} style={{ width: '100%', height: '100%', objectFit: 'contain' }} alt='' />}
-                                                        {item.icon && <item.icon size={25} color={item.color} />}
-                                                    </Box>
-                                                </Tooltip>
-                                            ))}
-                                        {getRowImages(row).length > 5 && (
-                                            <MoreItemsTooltip images={getRowImages(row).slice(5).map((i) => ({ label: i.label }))}>
-                                                <Typography sx={{ alignItems: 'center', display: 'flex', fontSize: '.9rem', fontWeight: 200 }}>
-                                                    + {getRowImages(row).length - 5} More
-                                                </Typography>
-                                            </MoreItemsTooltip>
-                                        )}
-                                    </Box>
+                                    <Tooltip title={getRowDescription(row)}>
+                                        <Typography
+                                            sx={{
+                                                display: '-webkit-box',
+                                                fontSize: 13,
+                                                WebkitLineClamp: 2,
+                                                WebkitBoxOrient: 'vertical',
+                                                textOverflow: 'ellipsis',
+                                                overflow: 'hidden'
+                                            }}
+                                        >
+                                            {getRowDescription(row)}
+                                        </Typography>
+                                    </Tooltip>
                                 </StyledTableCell>
                                 <StyledTableCell>{moment(row.updatedDate).format('MMMM Do, YYYY HH:mm:ss')}</StyledTableCell>
                                 {isActionsAvailable && (
@@ -202,7 +180,7 @@ function CustomAssistantTable({
                                             <CustomAssitantListMenu
                                                 assistant={row}
                                                 setError={setError}
-                                                updateAssistantsApi={updateAssistantsApi} // ✅ fixed prop name
+                                                updateAssistantsApi={updateAssistantsApi}
                                             />
                                         </Stack>
                                     </StyledTableCell>
@@ -218,8 +196,6 @@ function CustomAssistantTable({
 
 CustomAssistantTable.propTypes = {
     data: PropTypes.array,
-    images: PropTypes.object,
-    icons: PropTypes.object,
     isLoading: PropTypes.bool,
     filterFunction: PropTypes.func,
     updateAssistantsApi: PropTypes.object,

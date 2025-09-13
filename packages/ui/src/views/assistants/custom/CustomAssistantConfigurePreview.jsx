@@ -139,16 +139,16 @@ const CustomAssistantConfigurePreview = () => {
 
     const handleToolDataChange =
         (toolIndex) =>
-        ({ inputParam, newValue }) => {
-            setSelectedTools((prevTools) => {
-                const updatedTools = [...prevTools]
-                const updatedTool = { ...updatedTools[toolIndex] }
-                updatedTool.inputs[inputParam.name] = newValue
-                updatedTool.inputParams = showHideInputParams(updatedTool)
-                updatedTools[toolIndex] = updatedTool
-                return updatedTools
-            })
-        }
+            ({ inputParam, newValue }) => {
+                setSelectedTools((prevTools) => {
+                    const updatedTools = [...prevTools]
+                    const updatedTool = { ...updatedTools[toolIndex] }
+                    updatedTool.inputs[inputParam.name] = newValue
+                    updatedTool.inputParams = showHideInputParams(updatedTool)
+                    updatedTools[toolIndex] = updatedTool
+                    return updatedTools
+                })
+            }
 
     const displayWarning = () => {
         enqueueSnackbar({
@@ -168,31 +168,46 @@ const CustomAssistantConfigurePreview = () => {
     const checkInputParamsMandatory = () => {
         let canSubmit = true
 
-        const inputParams = (selectedChatModel.inputParams ?? []).filter((inputParam) => !inputParam.hidden)
-        for (const inputParam of inputParams) {
-            if (!inputParam.optional && (!selectedChatModel.inputs[inputParam.name] || !selectedChatModel.credential)) {
-                if (inputParam.type === 'credential' && !selectedChatModel.credential) {
-                    canSubmit = false
-                    break
-                } else if (inputParam.type !== 'credential' && !selectedChatModel.inputs[inputParam.name]) {
-                    canSubmit = false
-                    break
+        // --- Check model inputParams ---
+        const inputParams = (selectedChatModel.inputParams ?? []).filter(
+            (p) => !p.hidden && p.display !== false
+        )
+
+        for (const param of inputParams) {
+            if (!param.optional) {
+                if (param.type === 'credential') {
+                    if (!selectedChatModel.credential) {
+                        canSubmit = false
+                        break
+                    }
+                } else {
+                    if (!selectedChatModel.inputs?.[param.name]) {
+                        canSubmit = false
+                        break
+                    }
                 }
             }
         }
 
+        // --- Check tools inputParams ---
         if (selectedTools.length > 0) {
-            for (let i = 0; i < selectedTools.length; i++) {
-                const tool = selectedTools[i]
-                const inputParams = (tool.inputParams ?? []).filter((inputParam) => !inputParam.hidden)
-                for (const inputParam of inputParams) {
-                    if (!inputParam.optional && (!tool.inputs[inputParam.name] || !tool.credential)) {
-                        if (inputParam.type === 'credential' && !tool.credential) {
-                            canSubmit = false
-                            break
-                        } else if (inputParam.type !== 'credential' && !tool.inputs[inputParam.name]) {
-                            canSubmit = false
-                            break
+            for (const tool of selectedTools) {
+                const toolParams = (tool.inputParams ?? []).filter(
+                    (p) => !p.hidden && p.display !== false
+                )
+
+                for (const param of toolParams) {
+                    if (!param.optional) {
+                        if (param.type === 'credential') {
+                            if (!tool.credential) {
+                                canSubmit = false
+                                break
+                            }
+                        } else {
+                            if (!tool.inputs?.[param.name]) {
+                                canSubmit = false
+                                break
+                            }
                         }
                     }
                 }
@@ -201,6 +216,8 @@ const CustomAssistantConfigurePreview = () => {
 
         return canSubmit
     }
+
+
 
     const checkMandatoryFields = () => {
         let canSubmit = true
@@ -282,9 +299,8 @@ const CustomAssistantConfigurePreview = () => {
             } catch (error) {
                 setLoading(false)
                 enqueueSnackbar({
-                    message: `Failed to save assistant: ${
-                        typeof error.response.data === 'object' ? error.response.data.message : error.response.data
-                    }`,
+                    message: `Failed to save assistant: ${typeof error.response.data === 'object' ? error.response.data.message : error.response.data
+                        }`,
                     options: {
                         key: new Date().getTime() + Math.random(),
                         variant: 'error',
@@ -485,9 +501,8 @@ const CustomAssistantConfigurePreview = () => {
         } catch (error) {
             console.error('Error preparing config', error)
             enqueueSnackbar({
-                message: `Failed to save assistant: ${
-                    typeof error.response.data === 'object' ? error.response.data.message : error.response.data
-                }`,
+                message: `Failed to save assistant: ${typeof error.response.data === 'object' ? error.response.data.message : error.response.data
+                    }`,
                 options: {
                     key: new Date().getTime() + Math.random(),
                     variant: 'error',
