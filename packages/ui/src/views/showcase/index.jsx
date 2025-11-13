@@ -1,4 +1,4 @@
-// pages/showcase/index.jsx — Showcase-only (not saved in Agentflows), Update Tags option, no Tags in Add
+// pages/showcase/index.jsx — FULL FILE (opens agent share URL in both views)
 
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -19,12 +19,7 @@ import {
   Link as MuiLink,
   Menu,
   Checkbox,
-  Button,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  TextField
+  Button
 } from '@mui/material'
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown'
 import { useTheme } from '@mui/material/styles'
@@ -53,136 +48,12 @@ import { useError } from '@/store/context/ErrorContext'
 // icons
 import { IconPlus, IconLayoutGrid, IconList } from '@tabler/icons-react'
 
-/* ---------------- Normalizer: prefer /chatbot/<uuid>, fallback to /public-agent/<uuid> ---------------- */
-const normalizeToPublicUrl = (url, id) => {
-  const cacheBust = `v=${Date.now()}`
-  const withQs = (href) => (href.includes('?') ? `${href}&${cacheBust}` : `${href}?${cacheBust}`)
-  const fallbackById = () => withQs(`${uiBaseURL}/chatbot/${id}`)
+// modal
+import ShowcaseCreateDialog from '@/ui-component/dialog/ShowcaseCreateDialog'
 
-  if (!url) return fallbackById()
-
-  try {
-    // Full URLs
-    if (/^https?:\/\//i.test(url)) {
-      const u = new URL(url)
-      const m = u.pathname.match(/\/(chatbot|public-agent|agent)\/([0-9a-f-]{36})/i)
-      if (m && m[1] === 'chatbot') return withQs(`${u.origin}/chatbot/${m[2]}`)
-      if (m && m[1] !== 'chatbot') return withQs(`${u.origin}/public-agent/${m[2]}`)
-      return withQs(u.href)
-    }
-    // Relative paths
-    const m2 = url.match(/\/(chatbot|public-agent|agent)\/([0-9a-f-]{36})/i)
-    if (m2 && m2[1] === 'chatbot') return withQs(`${uiBaseURL}/chatbot/${m2[2]}`)
-    if (m2 && m2[1] !== 'chatbot') return withQs(`${uiBaseURL}/public-agent/${m2[2]}`)
-    return fallbackById()
-  } catch {
-    return fallbackById()
-  }
-}
-// compatibility alias (some places call this)
-const normalizeToChatbotUrl = normalizeToPublicUrl
-
-/* ===== Rename Dialog (Showcase) ===== */
-function ShowcaseRenameDialog({ open, row, onClose, onSave }) {
-  const [name, setName] = useState(row?.name || '')
-  const [description, setDescription] = useState(row?.description || '')
-  const [url, setUrl] = useState(() => {
-    try {
-      const fd = JSON.parse(row?.flowData || '{}')
-      return fd?.metadata?.shareUrl || ''
-    } catch { return '' }
-  })
-
-  useEffect(() => {
-    setName(row?.name || '')
-    setDescription(row?.description || '')
-    try {
-      const fd = JSON.parse(row?.flowData || '{}')
-      setUrl(fd?.metadata?.shareUrl || '')
-    } catch { setUrl('') }
-  }, [row, open])
-
-  return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Rename Agent</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          <TextField label="Agent name" value={name} onChange={(e) => setName(e.target.value)} fullWidth autoFocus />
-          <TextField label="Description" value={description} onChange={(e) => setDescription(e.target.value)} fullWidth multiline minRows={2} />
-          <TextField label="Agent URL" value={url} onChange={(e) => setUrl(e.target.value)} fullWidth placeholder="https://…" />
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button variant="text" onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={() => onSave({ name, description, url })}>Rename</Button>
-      </DialogActions>
-    </Dialog>
-  )
-}
-
-/* ===== Add Dialog (Showcase) — NO Tags here per request ===== */
-function ShowcaseAddDialog({ open, onClose, onSave }) {
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
-  const [category, setCategory] = useState('')
-  const [url, setUrl] = useState('')
-
-  useEffect(() => {
-    if (!open) { setName(''); setDescription(''); setCategory(''); setUrl('') }
-  }, [open])
-
-  return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Add to Showcase</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          <TextField label="Agent name" value={name} onChange={(e) => setName(e.target.value)} fullWidth autoFocus />
-          <TextField label="Description" value={description} onChange={(e) => setDescription(e.target.value)} fullWidth multiline minRows={2} />
-          <TextField label="Category" value={category} onChange={(e) => setCategory(e.target.value)} fullWidth />
-          <TextField label="Agent URL" value={url} onChange={(e) => setUrl(e.target.value)} fullWidth placeholder="https://…" />
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button variant="text" onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={() => onSave({ name: name?.trim(), description: description?.trim(), category: category?.trim(), url: url?.trim() })}>
-          Save
-        </Button>
-      </DialogActions>
-    </Dialog>
-  )
-}
-
-/* ===== Update Tags Dialog (copied pattern from Agentflows) ===== */
-function ShowcaseUpdateTagsDialog({ open, initialTags, onClose, onSave }) {
-  const [tags, setTags] = useState(initialTags || '')
-  useEffect(() => setTags(initialTags || ''), [initialTags, open])
-
-  return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Update Tags</DialogTitle>
-      <DialogContent>
-        <TextField
-          autoFocus
-          margin="dense"
-          label="Tags (comma separated)"
-          fullWidth
-          value={tags}
-          onChange={(e) => setTags(e.target.value)}
-        />
-      </DialogContent>
-      <DialogActions>
-        <Button variant="text" onClick={onClose}>Cancel</Button>
-        <Button variant="contained" onClick={() => onSave(tags)}>Save</Button>
-      </DialogActions>
-    </Dialog>
-  )
-}
-
-/* ========= Options menu (list view) ========= */
+/* ========= Local menu for Showcase LIST view only ========= */
 function ShowcaseOptionsMenu({ row }) {
   const [anchorEl, setAnchorEl] = useState(null)
-  const [openRename, setOpenRename] = useState(false)
-  const [openTags, setOpenTags] = useState(false)
   const open = Boolean(anchorEl)
   const handleOpen = (e) => setAnchorEl(e.currentTarget)
   const handleClose = () => setAnchorEl(null)
@@ -193,47 +64,39 @@ function ShowcaseOptionsMenu({ row }) {
   try {
     const parsed = JSON.parse(row?.flowData || '{}')
     enabled = !!parsed?.metadata?.showInShowcase
-  } catch { enabled = false }
+  } catch {
+    enabled = false
+  }
 
   const handleToggleDisable = async (e) => {
     e.stopPropagation()
     try {
       const current = JSON.parse(row?.flowData || '{}')
-      const next = { ...current, metadata: { ...(current.metadata || {}), showInShowcase: !enabled } }
+      const next = {
+        ...current,
+        metadata: { ...(current.metadata || {}), showInShowcase: !enabled }
+      }
       await updateChatflowApi.request(row.id, { flowData: JSON.stringify(next) })
+      // optimistic update
       row.flowData = JSON.stringify(next)
+      // notify Showcase to refresh (so the row disappears when disabled)
       window.dispatchEvent(new CustomEvent('showcase:toggle', { detail: { id: row.id, enabled: !enabled } }))
       handleClose()
-    } catch (err) { console.error(err); handleClose() }
-  }
-
-  const openRenameDialog = (e) => { e.stopPropagation(); setOpenRename(true); handleClose() }
-  const openTagsDialog = (e) => { e.stopPropagation(); setOpenTags(true); handleClose() }
-
-  const handleSaveRename = async ({ name, description, url }) => {
-    try {
-      const current = JSON.parse(row?.flowData || '{}')
-      const normalized = normalizeToChatbotUrl(url, row.id)
-      const next = { ...current, metadata: { ...(current.metadata || {}), shareUrl: normalized } }
-      await updateChatflowApi.request(row.id, { name, description, flowData: JSON.stringify(next) })
-      row.name = name
-      row.description = description
-      row.flowData = JSON.stringify(next)
-      window.dispatchEvent(new CustomEvent('showcase:renamed', { detail: { id: row.id } }))
-    } catch (e) { console.error(e) } finally { setOpenRename(false) }
-  }
-
-  const handleSaveTags = async (tags) => {
-    try {
-      await updateChatflowApi.request(row.id, { tags })
-      row.tags = tags
-      window.dispatchEvent(new CustomEvent('showcase:tags', { detail: { id: row.id } }))
-    } catch (e) { console.error(e) } finally { setOpenTags(false) }
+    } catch (err) {
+      console.error(err)
+      handleClose()
+    }
   }
 
   return (
     <>
-      <Button size="small" variant="text" onClick={handleOpen} endIcon={<KeyboardArrowDownIcon />} sx={{ borderRadius: 2, px: 1.25, py: 0.5 }}>
+      <Button
+        size="small"
+        variant="text"
+        onClick={handleOpen}
+        endIcon={<KeyboardArrowDownIcon />}
+        sx={{ borderRadius: 2, px: 1.25, py: 0.5 }}
+      >
         Options
       </Button>
       <Menu
@@ -243,23 +106,26 @@ function ShowcaseOptionsMenu({ row }) {
         anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
       >
-        <PermissionMenuItem permissionId={'agentflows:update'} onClick={openRenameDialog} dense disableRipple>
-          Rename
-        </PermissionMenuItem>
-        <PermissionMenuItem permissionId={'agentflows:update'} onClick={openTagsDialog} dense disableRipple>
-          Update Tags
-        </PermissionMenuItem>
-        <PermissionMenuItem permissionId={'agentflows:update'} onClick={handleToggleDisable} dense disableRipple>
-          <Checkbox size="small" checked={enabled} onClick={(e) => e.stopPropagation()} sx={{ p: 0, mr: 1.25 }} />
+        {/* Only one item inside dropdown */}
+        <PermissionMenuItem
+          permissionId={'agentflows:update'}
+          onClick={handleToggleDisable}
+          dense
+          disableRipple
+        >
+          <Checkbox
+            size="small"
+            checked={enabled}             // checked = currently visible in Showcase
+            onClick={(e) => e.stopPropagation()}
+            sx={{ p: 0, mr: 1.25 }}
+          />
           Disable from Showcase
         </PermissionMenuItem>
       </Menu>
-
-      <ShowcaseRenameDialog open={openRename} row={row} onClose={() => setOpenRename(false)} onSave={handleSaveRename} />
-      <ShowcaseUpdateTagsDialog open={openTags} initialTags={row?.tags || ''} onClose={() => setOpenTags(false)} onSave={handleSaveTags} />
     </>
   )
 }
+/* ========================================================== */
 
 const Showcase = () => {
   const navigate = useNavigate()
@@ -276,6 +142,7 @@ const Showcase = () => {
   const createAgentflowApi = useApi(chatflowsApi.createNewChatflow)
 
   const [view, setView] = useState(localStorage.getItem('flowDisplayStyle') || 'card')
+  const [agentflowVersion, setAgentflowVersion] = useState(localStorage.getItem('agentFlowVersion') || 'v2')
 
   const [openCreate, setOpenCreate] = useState(false)
   const [shareUrls, setShareUrls] = useState({})
@@ -287,19 +154,25 @@ const Showcase = () => {
   const onChange = (page, pageLimit) => {
     setCurrentPage(page)
     setPageLimit(pageLimit)
-    refresh(page, pageLimit)
+    refresh(page, pageLimit, agentflowVersion)
   }
 
-  // IMPORTANT: Showcase-only type so these do NOT appear in Agentflows
-  const refresh = (page, limit) => {
+  const refresh = (page, limit, nextView) => {
     const params = { page: page || currentPage, limit: limit || pageLimit }
-    getAllAgentflows.request('SHOWCASE', params)
+    getAllAgentflows.request(nextView === 'v2' ? 'AGENTFLOW' : 'MULTIAGENT', params)
   }
 
   const handleChange = (_e, nextView) => {
     if (nextView === null) return
     localStorage.setItem('flowDisplayStyle', nextView)
     setView(nextView)
+  }
+
+  const handleVersionChange = (_e, nextView) => {
+    if (nextView === null) return
+    localStorage.setItem('agentFlowVersion', nextView)
+    setAgentflowVersion(nextView)
+    refresh(1, pageLimit, nextView)
   }
 
   const onSearchChange = (e) => setSearch(e.target.value)
@@ -314,51 +187,44 @@ const Showcase = () => {
 
   const addNew = () => setOpenCreate(true)
 
-  // Always return a proper /chatbot URL with a cache-buster
+  // Open the agent URL in a new tab for a given row
   const getShareUrl = (rowOrId) => {
     const id = typeof rowOrId === 'string' ? rowOrId : rowOrId?.id
-    const fromMeta = shareUrls[id]
-    return normalizeToChatbotUrl(fromMeta, id)
+    return shareUrls[id] || `${uiBaseURL}/chatbot/${id}`
+  }
+  const openShareUrl = (row) => {
+    const url = getShareUrl(row)
+    window.open(url, '_blank', 'noopener,noreferrer')
   }
 
   const goToCanvas = (selectedAgentflow) => {
-    // Keep canvas navigation unchanged if needed elsewhere
-    navigate(`/v2/agentcanvas/${selectedAgentflow.id}`)
+    if (selectedAgentflow.type === 'AGENTFLOW') navigate(`/v2/agentcanvas/${selectedAgentflow.id}`)
+    else navigate(`/agentcanvas/${selectedAgentflow.id}`)
   }
 
-  // CREATE: Save as SHOWCASE type (won’t appear in Agentflows) — NO tags here
   const createAgentflow = async ({ name, category, description, url }) => {
     try {
-      const flowData = {
-        nodes: [],
-        edges: [],
-        viewport: { x: 0, y: 0, zoom: 1 },
-        metadata: {
-          shareUrl: normalizeToChatbotUrl(url, 'TEMP'),
-          showInShowcase: true
-        }
-      }
-
-      const payload = {
-        name,
-        category: category || '',
-        description: description || '',
-        type: 'SHOWCASE',            // ← key change: showcase-only
-        tags: '',                    // no tags on create
-        flowData: JSON.stringify(flowData)
-      }
-
+      const flowData = { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, metadata: { shareUrl: url || '' } }
+      const payload = { name, category, description, type: 'AGENTFLOW', flowData: JSON.stringify(flowData) }
       await createAgentflowApi.request(payload)
       setOpenCreate(false)
-      refresh(1, pageLimit)
+      refresh(1, pageLimit, agentflowVersion)
     } catch (e) {
       console.error(e)
       setOpenCreate(false)
     }
   }
 
-  useEffect(() => { refresh(currentPage, pageLimit) }, [])
-  useEffect(() => { if (getAllAgentflows.error) setError(getAllAgentflows.error) }, [getAllAgentflows.error])
+  useEffect(() => {
+    refresh(currentPage, pageLimit, agentflowVersion)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    if (getAllAgentflows.error) setError(getAllAgentflows.error)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [getAllAgentflows.error])
+
   useEffect(() => setLoading(getAllAgentflows.loading), [getAllAgentflows.loading])
 
   useEffect(() => {
@@ -399,7 +265,9 @@ const Showcase = () => {
       setImages(nextImages)
       setIcons(nextIcons)
       setShareUrls(nextShareUrls)
-    } catch (e) { console.error(e) }
+    } catch (e) {
+      console.error(e)
+    }
   }, [getAllAgentflows.data])
 
   // Only show items explicitly enabled for Showcase
@@ -408,21 +276,20 @@ const Showcase = () => {
       try {
         const flowData = JSON.parse(row.flowData || '{}')
         return flowData?.metadata?.showInShowcase === true
-      } catch { return false }
+      } catch {
+        return false
+      }
     }) || []
 
-  // Refresh on toggle / rename / tags update
+  // Listen for the toggle event and refresh immediately
   useEffect(() => {
-    const onAny = () => getAllAgentflows.request('SHOWCASE', { page: 1, limit: pageLimit })
-    window.addEventListener('showcase:toggle', onAny)
-    window.addEventListener('showcase:renamed', onAny)
-    window.addEventListener('showcase:tags', onAny)
-    return () => {
-      window.removeEventListener('showcase:toggle', onAny)
-      window.removeEventListener('showcase:renamed', onAny)
-      window.removeEventListener('showcase:tags', onAny)
+    const onToggle = () => {
+      const type = agentflowVersion === 'v2' ? 'AGENTFLOW' : 'MULTIAGENT'
+      getAllAgentflows.request(type, { page: 1, limit: pageLimit })
     }
-  }, [pageLimit, getAllAgentflows])
+    window.addEventListener('showcase:toggle', onToggle)
+    return () => window.removeEventListener('showcase:toggle', onToggle)
+  }, [agentflowVersion, pageLimit, getAllAgentflows])
 
   const groupedAgentflows = showcaseEnabledData
     ?.filter(filterFlows)
@@ -441,28 +308,38 @@ const Showcase = () => {
         <Stack flexDirection="column" sx={{ gap: 3 }}>
           <ViewHeader
             onSearchChange={onSearchChange}
-            search
+            search={true}
             searchPlaceholder="Search Name or Tag"
             title="Showcase"
             description="Coworkers crafted for real lives, real needs"
           >
             <ToggleButtonGroup sx={{ borderRadius: 2, maxHeight: 40 }} value={view} disabled={total === 0} color="primary" exclusive onChange={handleChange}>
-              <ToggleButton sx={{ borderRadius: 2 }} variant="contained" value="card" title="Card View">
+              <ToggleButton
+                sx={{ borderColor: theme.palette.grey[900] + 25, borderRadius: 2, color: customization.isDarkMode ? 'white' : 'inherit' }}
+                variant="contained"
+                value="card"
+                title="Card View"
+              >
                 <IconLayoutGrid />
               </ToggleButton>
-              <ToggleButton sx={{ borderRadius: 2 }} variant="contained" value="list" title="List View">
+              <ToggleButton
+                sx={{ borderColor: theme.palette.grey[900] + 25, borderRadius: 2, color: customization.isDarkMode ? 'white' : 'inherit' }}
+                variant="contained"
+                value="list"
+                title="List View"
+              >
                 <IconList />
               </ToggleButton>
             </ToggleButtonGroup>
 
-            <StyledPermissionButton permissionId={'agentflows:create'} variant="contained" onClick={() => setOpenCreate(true)} startIcon={<IconPlus />} sx={{ borderRadius: 2, height: 40 }}>
+            <StyledPermissionButton permissionId={'agentflows:create'} variant="contained" onClick={addNew} startIcon={<IconPlus />} sx={{ borderRadius: 2, height: 40 }}>
               Add New
             </StyledPermissionButton>
           </ViewHeader>
 
           {!isLoading && showcaseEnabledData.length > 0 && (
             <>
-              {/* CARD VIEW: entire card opens the /chatbot URL */}
+              {/* CARD VIEW: entire card opens the agent share URL */}
               {!view || view === 'card' ? (
                 <Stack spacing={4}>
                   {groupedAgentflows &&
@@ -516,13 +393,39 @@ const Showcase = () => {
                     ))}
                 </Stack>
               ) : (
-                /* LIST VIEW — includes Tags column */
-                <Box sx={{ borderRadius: 2, overflow: 'hidden', border: `1px solid ${theme.palette.divider}` }}>
-                  <Table size="medium">
+                /* LIST VIEW: name opens share URL; Options dropdown present */
+                <Box sx={{
+                  borderRadius: 2,
+                  overflow: 'hidden',
+                  border: `1px solid ${theme.palette.divider}`,
+                  backgroundColor:
+                    theme.palette.mode === 'dark'
+                      ? theme.palette.background.default
+                      : theme.palette.background.paper
+                }}>
+                  <Table size="medium"
+                    sx={{
+                      '& thead th': {
+                        backgroundColor:
+                          theme.palette.mode === 'dark'
+                            ? 'rgba(255,255,255,0.05)'
+                            : 'rgba(0,0,0,0.03)',
+                        color: theme.palette.text.primary,
+                        fontWeight: 600
+                      },
+                      '& tbody tr': {
+                        '&:hover': {
+                          backgroundColor: theme.palette.action.hover
+                        }
+                      },
+                      '& td, & th': {
+                        borderBottom: `1px solid ${theme.palette.divider}`,
+                        color: theme.palette.text.primary
+                      }
+                    }}>
                     <TableHead>
                       <TableRow>
                         <TableCell sx={{ fontWeight: 600 }}>Name</TableCell>
-                        <TableCell sx={{ fontWeight: 600 }}>Tags</TableCell>
                         <TableCell sx={{ fontWeight: 600 }}>Last Modified Date</TableCell>
                         <TableCell sx={{ fontWeight: 600 }}>Actions</TableCell>
                       </TableRow>
@@ -530,24 +433,23 @@ const Showcase = () => {
                     <TableBody>
                       {showcaseEnabledData.map((row) => {
                         const urlToOpen = getShareUrl(row.id)
-                        const tagList = Array.isArray(row.tags)
-                          ? row.tags
-                          : (row.tags ? row.tags.split(',').map((t) => t.trim()).filter(Boolean) : [])
-
                         return (
                           <TableRow key={row.id} hover>
                             <TableCell>
-                              <MuiLink component="button" type="button" underline="hover" sx={{ fontWeight: 500 }} onClick={() => window.open(urlToOpen, '_blank', 'noopener,noreferrer')}>
+                              <MuiLink
+                                component="button"
+                                type="button"
+                                underline="hover"
+                                sx={{ fontWeight: 500 }}
+                                onClick={() => window.open(urlToOpen, '_blank', 'noopener,noreferrer')}
+                              >
                                 {row.name}
                               </MuiLink>
                             </TableCell>
-                            <TableCell>
-                              <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap' }}>
-                                {tagList.length ? tagList.map((t) => <Chip key={t} label={t} size="small" />) : '—'}
-                              </Stack>
-                            </TableCell>
                             <TableCell>{row.updatedDate || row.updated || row.createdDate || '—'}</TableCell>
-                            <TableCell><ShowcaseOptionsMenu row={row} /></TableCell>
+                            <TableCell>
+                              <ShowcaseOptionsMenu row={row} />
+                            </TableCell>
                           </TableRow>
                         )
                       })}
@@ -572,8 +474,7 @@ const Showcase = () => {
       )}
       <ConfirmDialog />
 
-      {/* Showcase Add dialog */}
-      <ShowcaseAddDialog open={openCreate} onClose={() => setOpenCreate(false)} onSave={createAgentflow} />
+      <ShowcaseCreateDialog open={openCreate} onClose={() => setOpenCreate(false)} onSave={createAgentflow} />
     </MainCard>
   )
 }
