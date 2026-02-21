@@ -585,6 +585,23 @@ class TwilioVoiceCall_AgentFlows implements INode {
         clearInterval(statusCheckInterval)
         clearTimeout(cleanupTimer)
 
+        let finalCallStatus = 'completed'
+        try {
+            const statusUrl = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls/${callSid}.json`
+            const statusResponse = await fetch(statusUrl, {
+                headers: {
+                    Authorization: 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64')
+                }
+            })
+            if (statusResponse.ok) {
+                const statusJson = (await statusResponse.json()) as Record<string, any>
+                finalCallStatus = statusJson.status || 'completed'
+                console.log(`[TwilioVoiceCall] Final call status from Twilio: ${finalCallStatus}`)
+            }
+        } catch (err) {
+            console.error('[TwilioVoiceCall] Could not fetch final call status:', err)
+        }
+
         console.log('[TwilioVoiceCall] Call ended. endedSession:', !!endedSession)
         console.log('[TwilioVoiceCall] Transcript entries:', endedSession?.transcript?.length || 0)
 
@@ -605,7 +622,7 @@ class TwilioVoiceCall_AgentFlows implements INode {
                 callSid: callSid,
                 callTranscript: transcriptFormatted,
                 callDuration: String(durationSec),
-                callStatus: callJson.status
+                callStatus: finalCallStatus
             }
             console.log('[TwilioVoiceCall] Auto-saving to flow state:', Object.keys(autoState))
             await options.updateState(autoState)
@@ -640,7 +657,7 @@ class TwilioVoiceCall_AgentFlows implements INode {
         const output: Record<string, any> = {
             content: transcriptFormatted || 'No transcript available',
             callSid,
-            status: callJson.status,
+            status: finalCallStatus,
             duration: durationSec,
             timeMetadata: {
                 start: endedSession?.startedAt || Date.now(),
@@ -668,7 +685,7 @@ class TwilioVoiceCall_AgentFlows implements INode {
                 callSid,
                 callTranscript: transcriptFormatted,
                 callDuration: String(durationSec),
-                callStatus: callJson.status
+                callStatus: finalCallStatus
             }
         }
     }
