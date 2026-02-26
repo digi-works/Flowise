@@ -86,7 +86,7 @@ class AgentWithFallback_AgentFlows implements INode {
         this.category = 'Agent Flows'
         this.icon = 'agentfallback.svg'
         this.description = 'Agent with primary and fallback models for resilient execution without flow interruption'
-        this.color = '#FF6B6B'
+        this.color = '#1a73e8'
         this.baseClasses = [this.type]
         this.inputs = [
             {

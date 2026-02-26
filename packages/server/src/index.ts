@@ -326,6 +326,8 @@ export class App {
         // Serve UI static
         // ----------------------------------------
 
+        this.app.use('/recordings', express.static(path.join(process.cwd(), 'public', 'recordings')))
+
         const packagePath = getNodeModulesPackagePath('flowise-ui')
         const uiBuildPath = path.join(packagePath, 'build')
         const uiHtmlPath = path.join(packagePath, 'build', 'index.html')
