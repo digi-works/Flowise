@@ -57,6 +57,33 @@ async function getOrCreateSharedServer(): Promise<{ server: http.Server; port: n
             res.end(pending.twiml)
             return
         }
+        const recordingMatch = url.match(/^\/recordings\/([^/?]+)$/)
+        if (recordingMatch) {
+            const filename = recordingMatch[1]
+            const fs = require('fs')
+            const path = require('path')
+            const filepath = path.join(process.cwd(), 'public', 'recordings', filename)
+
+            console.log(`[TwilioVoiceCall] Recording request for: ${filename}`)
+
+            if (fs.existsSync(filepath)) {
+                const stat = fs.statSync(filepath)
+                res.writeHead(200, {
+                    'Content-Type': 'audio/mpeg',
+                    'Content-Length': stat.size,
+                    'Accept-Ranges': 'bytes'
+                })
+                const fileStream = fs.createReadStream(filepath)
+                fileStream.pipe(res)
+                console.log(`[TwilioVoiceCall] ✅ Served recording: ${filename} (${stat.size} bytes)`)
+                return
+            } else {
+                console.log(`[TwilioVoiceCall] ❌ Recording not found: ${filepath}`)
+                res.writeHead(404)
+                res.end('Recording not found')
+                return
+            }
+        }
 
         res.writeHead(200)
         res.end('Twilio Voice Bridge OK')
@@ -157,6 +184,112 @@ function findFreePort(startPort: number): Promise<number> {
     })
 }
 
+async function getCallRecordings(accountSid: string, authToken: string, callSid: string, maxRetries = 5): Promise<any[]> {
+    const recordingsUrl = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls/${callSid}/Recordings.json`
+
+    // Retry logic to wait for recording to be ready
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        const response = await fetch(recordingsUrl, {
+            headers: {
+                Authorization: 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64')
+            }
+        })
+
+        if (!response.ok) {
+            throw new Error(`Failed to fetch recordings: ${response.status}`)
+        }
+
+        const data = (await response.json()) as Record<string, any>
+        const recordings = data.recordings || []
+
+        // Check if recordings exist and are ready
+        if (recordings.length > 0) {
+            const recording = recordings[0]
+            if (recording.status === 'completed') {
+                console.log(`[TwilioVoiceCall] Recording ready after ${attempt + 1} attempt(s)`)
+                return recordings
+            }
+            console.log(`[TwilioVoiceCall] Recording status: ${recording.status}, waiting...`)
+        } else {
+            console.log(`[TwilioVoiceCall] No recordings found yet, attempt ${attempt + 1}/${maxRetries}`)
+        }
+
+        // Wait before retrying (exponential backoff)
+        if (attempt < maxRetries - 1) {
+            await new Promise((resolve) => setTimeout(resolve, 2000 + attempt * 1000))
+        }
+    }
+
+    // Return whatever we have after max retries
+    const response = await fetch(recordingsUrl, {
+        headers: {
+            Authorization: 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64')
+        }
+    })
+    const data = (await response.json()) as Record<string, any>
+    return data.recordings || []
+}
+
+// Helper function to download recording from Twilio and save to public storage
+// This provides a publicly accessible URL without Twilio authentication
+async function downloadAndStoreRecording(accountSid: string, authToken: string, recording: any, publicBaseUrl: string): Promise<string> {
+    try {
+        const recordingSid = recording.sid
+        const recordingUri = recording.uri
+
+        // Check if recording is ready
+        if (recording.status !== 'completed') {
+            console.log(`[TwilioVoiceCall] Recording not ready yet (status: ${recording.status}), returning Twilio URL`)
+            // Return the Twilio media_url which can be accessed with auth
+            return recording.media_url || `https://api.twilio.com${recordingUri.replace('.json', '.mp3')}`
+        }
+
+        // Download the recording from Twilio using media_url
+        const downloadUrl = recording.media_url || `https://api.twilio.com${recordingUri.replace('.json', '.mp3')}`
+        console.log('[TwilioVoiceCall] Downloading recording from Twilio:', downloadUrl)
+
+        const response = await fetch(downloadUrl, {
+            headers: {
+                Authorization: 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64')
+            }
+        })
+
+        if (!response.ok) {
+            console.log(`[TwilioVoiceCall] Failed to download recording: ${response.status}, returning Twilio URL`)
+            return recording.media_url || `https://api.twilio.com${recordingUri.replace('.json', '.mp3')}`
+        }
+
+        const buffer = Buffer.from(await response.arrayBuffer())
+        console.log('[TwilioVoiceCall] Downloaded recording, size:', buffer.length, 'bytes')
+
+        // Save to a public directory (adjust path based on your Flowise setup)
+        const fs = await import('fs')
+        const path = await import('path')
+
+        // Create recordings directory if it doesn't exist
+        // This should be in your public/static files directory
+        const recordingsDir = path.join(process.cwd(), 'public', 'recordings')
+        if (!fs.existsSync(recordingsDir)) {
+            fs.mkdirSync(recordingsDir, { recursive: true })
+        }
+
+        // Save file with recording SID as filename
+        const filename = `${recordingSid}.mp3`
+        const filepath = path.join(recordingsDir, filename)
+        fs.writeFileSync(filepath, new Uint8Array(buffer))
+
+        // Generate public URL
+        const publicUrl = `${publicBaseUrl}/recordings/${filename}`
+        console.log('[TwilioVoiceCall] ✅ Recording saved and accessible at:', publicUrl)
+
+        return publicUrl
+    } catch (error) {
+        console.error('[TwilioVoiceCall] Error downloading and storing recording:', error)
+        // Fallback to Twilio media URL
+        return recording.media_url || `https://api.twilio.com${recording.uri.replace('.json', '.mp3')}`
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 class TwilioVoiceCall_AgentFlows implements INode {
@@ -184,7 +317,7 @@ class TwilioVoiceCall_AgentFlows implements INode {
             'Make an outbound phone call and hold a real-time AI conversation ' +
             'with the caller using Twilio ConversationRelay and any Chat Model ' +
             'available in your Digiworks instance.'
-        this.color = '#1a73e8'
+        this.color = '#F22F46'
         this.baseClasses = [this.type]
 
         this.credential = {
@@ -255,6 +388,14 @@ class TwilioVoiceCall_AgentFlows implements INode {
                 description: 'If enabled, the full call transcript will be returned after the call ends.',
                 default: true
             },
+            {
+                label: 'Enable Recording',
+                name: 'enableRecording',
+                type: 'boolean',
+                optional: true,
+                default: true,
+                description: 'Record the phone call (default: true)'
+            },
 
             // --- Advanced settings -----------------------------------
             {
@@ -315,13 +456,11 @@ class TwilioVoiceCall_AgentFlows implements INode {
                 optional: true
             },
             {
-                label: 'Webhook Base URL',
-                name: 'twilioWebhookBaseUrl',
+                label: 'Public Base URL',
+                name: 'publicBaseUrl',
                 type: 'string',
-                description:
-                    'Your ngrok URL tunnelling to the bridge server port (shown in Flowise logs on first run). ' +
-                    'Example: https://abc123.ngrok-free.app',
-                placeholder: 'https://abc123.ngrok-free.app',
+                description: 'The public URL where Twilio can reach your server',
+                placeholder: 'https://your-domain.com or https://xxxx.ngrok.io',
                 optional: false,
                 acceptVariable: true
             },
@@ -400,12 +539,16 @@ class TwilioVoiceCall_AgentFlows implements INode {
         const sttProvider = (nodeData.inputs?.twilioSTTProvider as string) || 'google'
         const language = (nodeData.inputs?.twilioLanguage as string) || 'en-US'
         const maxDuration = (nodeData.inputs?.twilioMaxDuration as number) || 300
-        const webhookBaseUrl = (nodeData.inputs?.twilioWebhookBaseUrl as string)?.trim() || ''
+        const publicBaseUrl = (nodeData.inputs?.publicBaseUrl as string)?.trim() || ''
+        const enableRecording = nodeData.inputs?.enableRecording !== false // FIX: was twilioEnableRecording
         const enableTranscript = nodeData.inputs?.twilioEnableTranscript !== false
+
+        console.log('[TwilioVoiceCall] enableRecording from inputs:', nodeData.inputs?.enableRecording)
+        console.log('[TwilioVoiceCall] enableRecording final value:', enableRecording)
 
         if (!fromNumber) throw new Error('"Twilio Number" is required.')
         if (!toNumber) throw new Error('"To Call Numbers" is required.')
-        if (!webhookBaseUrl) throw new Error('"Webhook Base URL" is required. Paste your ngrok URL here.')
+        if (!publicBaseUrl) throw new Error('"Public Base URL" is required. Paste your public URL here.')
 
         // ------------------------------------------------------------------
         // 3.  Load the LLM
@@ -440,7 +583,7 @@ class TwilioVoiceCall_AgentFlows implements INode {
         const { port } = await getOrCreateSharedServer()
 
         // Normalise base URL — strip trailing slash
-        const baseUrl = webhookBaseUrl.replace(/\/+$/, '')
+        const baseUrl = publicBaseUrl.replace(/\/+$/, '')
 
         // ------------------------------------------------------------------
         // 5.  Create session
@@ -500,8 +643,11 @@ class TwilioVoiceCall_AgentFlows implements INode {
             From: fromNumber,
             To: toNumber,
             Url: twimlUrl,
-            Method: 'GET'
+            Method: 'GET',
+            Record: enableRecording ? 'true' : 'false'
         }
+
+        console.log('[TwilioVoiceCall] Call API body:', JSON.stringify(callBody, null, 2))
 
         const callResponse = await fetch(callApiUrl, {
             method: 'POST',
@@ -602,6 +748,49 @@ class TwilioVoiceCall_AgentFlows implements INode {
             console.error('[TwilioVoiceCall] Could not fetch final call status:', err)
         }
 
+        let recordings: any[] = []
+        let recordingUrl = ''
+
+        console.log('[TwilioVoiceCall] ===== RECORDING FETCH DEBUG =====')
+        console.log('[TwilioVoiceCall] enableRecording:', enableRecording)
+        console.log('[TwilioVoiceCall] callSid:', callSid)
+
+        if (enableRecording) {
+            try {
+                console.log('[TwilioVoiceCall] Fetching recordings from Twilio API (with retry logic)...')
+                recordings = await getCallRecordings(accountSid, authToken, callSid)
+                console.log(`[TwilioVoiceCall] Found ${recordings.length} recording(s)`)
+                console.log('[TwilioVoiceCall] Recordings array:', JSON.stringify(recordings, null, 2))
+
+                if (recordings.length > 0) {
+                    const recording = recordings[0]
+
+                    // Download from Twilio and save to public directory for client access
+                    console.log('[TwilioVoiceCall] Processing recording for public access...')
+                    recordingUrl = await downloadAndStoreRecording(accountSid, authToken, recording, publicBaseUrl)
+                    console.log('[TwilioVoiceCall] ✅ Public recording URL:', recordingUrl)
+
+                    recordings.forEach((rec, idx) => {
+                        console.log(`[TwilioVoiceCall] Recording ${idx + 1}:`, {
+                            sid: rec.sid,
+                            status: rec.status,
+                            duration: rec.duration,
+                            mediaUrl: rec.media_url
+                        })
+                    })
+                } else {
+                    console.log('[TwilioVoiceCall] ⚠️ No recordings found - recordingUrl will be empty')
+                }
+            } catch (err) {
+                console.error('[TwilioVoiceCall] ❌ Error fetching recordings:', err)
+            }
+        } else {
+            console.log('[TwilioVoiceCall] Recording is DISABLED - skipping fetch')
+        }
+
+        console.log('[TwilioVoiceCall] Final recordingUrl value:', recordingUrl)
+        console.log('[TwilioVoiceCall] =====================================')
+
         console.log('[TwilioVoiceCall] Call ended. endedSession:', !!endedSession)
         console.log('[TwilioVoiceCall] Transcript entries:', endedSession?.transcript?.length || 0)
 
@@ -624,8 +813,26 @@ class TwilioVoiceCall_AgentFlows implements INode {
                 callDuration: String(durationSec),
                 callStatus: finalCallStatus
             }
+
+            console.log('[TwilioVoiceCall] ===== STATE UPDATE DEBUG =====')
+            console.log('[TwilioVoiceCall] enableRecording:', enableRecording)
+            console.log('[TwilioVoiceCall] recordingUrl:', recordingUrl)
+            console.log('[TwilioVoiceCall] Will add to state?', enableRecording && recordingUrl)
+
+            // Add recording URL to autoState if available
+            if (enableRecording && recordingUrl) {
+                autoState.callRecordingUrl = recordingUrl
+                console.log('[TwilioVoiceCall] ✅ Added callRecordingUrl to autoState:', recordingUrl)
+            } else {
+                console.log('[TwilioVoiceCall] ⚠️ NOT adding callRecordingUrl to state')
+                if (!enableRecording) console.log('[TwilioVoiceCall]    Reason: Recording is disabled')
+                if (!recordingUrl) console.log('[TwilioVoiceCall]    Reason: recordingUrl is empty')
+            }
+
             console.log('[TwilioVoiceCall] Auto-saving to flow state:', Object.keys(autoState))
+            console.log('[TwilioVoiceCall] State values:', JSON.stringify(autoState, null, 2))
             await options.updateState(autoState)
+            console.log('[TwilioVoiceCall] ===================================')
         }
 
         // Also handle user-configured state updates if provided
@@ -669,6 +876,20 @@ class TwilioVoiceCall_AgentFlows implements INode {
         if (enableTranscript && endedSession?.transcript) {
             output.rawTranscript = endedSession.transcript
         }
+        if (enableRecording && recordings.length > 0) {
+            const recording = recordings[0] // Use the first recording
+            output.recording = {
+                sid: recording.sid,
+                duration: recording.duration,
+                url: recordingUrl, // Public URL (already processed by downloadAndStoreRecording)
+                twilioApiUrl: `https://api.twilio.com${recording.uri.replace('.json', '.mp3')}`, // Original Twilio URL
+                allRecordings: recordings.map((rec) => ({
+                    sid: rec.sid,
+                    duration: rec.duration,
+                    dateCreated: rec.date_created
+                }))
+            }
+        }
 
         // Return in Flowise's expected structure
         return {
@@ -685,7 +906,8 @@ class TwilioVoiceCall_AgentFlows implements INode {
                 callSid,
                 callTranscript: transcriptFormatted,
                 callDuration: String(durationSec),
-                callStatus: finalCallStatus
+                callStatus: finalCallStatus,
+                callRecordingUrl: recordingUrl
             }
         }
     }
