@@ -1,5 +1,6 @@
 import { ICommonObject, INode, INodeData, INodeOptionsValue, INodeParams } from '../../../src/Interface'
 import { getCredentialData, getCredentialParam } from '../../../src/utils'
+import { updateFlowState } from '../utils'
 import { ConversationRelaySessionManager } from './TwilioConversationRelay'
 import { v4 as uuidv4 } from 'uuid'
 import fetch from 'node-fetch'
@@ -469,7 +470,7 @@ class TwilioVoiceCall_AgentFlows implements INode {
             {
                 label: 'Update Flow State',
                 name: 'twilioUpdateState',
-                description: 'Store call results in flow state for downstream nodes.',
+                description: 'Update runtime state during the execution of the workflow',
                 type: 'array',
                 optional: true,
                 acceptVariable: true,
@@ -477,15 +478,16 @@ class TwilioVoiceCall_AgentFlows implements INode {
                     {
                         label: 'Key',
                         name: 'key',
-                        type: 'string',
-                        placeholder: 'callTranscript'
+                        type: 'asyncOptions',
+                        loadMethod: 'listRuntimeStateKeys',
+                        freeSolo: true
                     },
                     {
                         label: 'Value',
                         name: 'value',
                         type: 'string',
                         acceptVariable: true,
-                        placeholder: 'Use {{$nodeOutput.transcript}} or type a value'
+                        acceptNodeOutputAsVariable: true
                     }
                 ]
             }
@@ -510,6 +512,12 @@ class TwilioVoiceCall_AgentFlows implements INode {
                 }
             }
             return returnOptions
+        },
+        async listRuntimeStateKeys(_: INodeData, options: ICommonObject): Promise<INodeOptionsValue[]> {
+            const previousNodes = options.previousNodes as ICommonObject[]
+            const startAgentflowNode = previousNodes.find((node) => node.name === 'startAgentflow')
+            const state = startAgentflowNode?.inputs?.startState as ICommonObject[]
+            return state?.map((item) => ({ label: item.key, name: item.key })) || []
         }
     }
 
@@ -805,55 +813,41 @@ class TwilioVoiceCall_AgentFlows implements INode {
         console.log('[TwilioVoiceCall] transcriptFormatted length:', transcriptFormatted.length)
         console.log('[TwilioVoiceCall] transcriptFormatted preview:', transcriptFormatted.substring(0, 200))
 
-        // Always save transcript to flow state automatically for downstream nodes
-        if (options.updateState && typeof options.updateState === 'function') {
-            const autoState: Record<string, string> = {
-                callSid: callSid,
-                callTranscript: transcriptFormatted,
-                callDuration: String(durationSec),
-                callStatus: finalCallStatus
-            }
+        // Update flow state if needed
+        const state = (options.agentflowRuntime?.state as ICommonObject) || {}
+        let newState = { ...state }
+        const _twilioUpdateState = nodeData.inputs?.twilioUpdateState
 
-            console.log('[TwilioVoiceCall] ===== STATE UPDATE DEBUG =====')
-            console.log('[TwilioVoiceCall] enableRecording:', enableRecording)
-            console.log('[TwilioVoiceCall] recordingUrl:', recordingUrl)
-            console.log('[TwilioVoiceCall] Will add to state?', enableRecording && recordingUrl)
-
-            // Add recording URL to autoState if available
-            if (enableRecording && recordingUrl) {
-                autoState.callRecordingUrl = recordingUrl
-                console.log('[TwilioVoiceCall] ✅ Added callRecordingUrl to autoState:', recordingUrl)
-            } else {
-                console.log('[TwilioVoiceCall] ⚠️ NOT adding callRecordingUrl to state')
-                if (!enableRecording) console.log('[TwilioVoiceCall]    Reason: Recording is disabled')
-                if (!recordingUrl) console.log('[TwilioVoiceCall]    Reason: recordingUrl is empty')
-            }
-
-            console.log('[TwilioVoiceCall] Auto-saving to flow state:', Object.keys(autoState))
-            console.log('[TwilioVoiceCall] State values:', JSON.stringify(autoState, null, 2))
-            await options.updateState(autoState)
-            console.log('[TwilioVoiceCall] ===================================')
+        if (_twilioUpdateState && Array.isArray(_twilioUpdateState) && _twilioUpdateState.length > 0) {
+            newState = updateFlowState(state, _twilioUpdateState)
         }
 
-        // Also handle user-configured state updates if provided
-        const stateUpdates = nodeData.inputs?.twilioUpdateState as Array<{ key: string; value: string }>
-        console.log('[TwilioVoiceCall] stateUpdates raw:', JSON.stringify(stateUpdates))
+        // Process template variables in state
+        if (newState && Object.keys(newState).length > 0) {
+            for (const key in newState) {
+                const stateValue = newState[key]?.toString() || ''
+                if (stateValue.includes('{{ output')) {
+                    // Handle simple output replacement
+                    if (stateValue === '{{ output }}') {
+                        newState[key] = transcriptFormatted
+                        continue
+                    }
 
-        if (stateUpdates && Array.isArray(stateUpdates) && stateUpdates.length > 0 && options.updateState) {
-            const stateMap: Record<string, string> = {}
-            for (const entry of stateUpdates) {
-                if (!entry.key || !entry.value) continue
+                    // Handle JSON path expressions like {{ output.callSid }}
+                    const match = stateValue.match(/\{\{\s*output\.(\w+)\s*\}\}/)
+                    if (match) {
+                        const outputMap: Record<string, any> = {
+                            callSid: callSid,
+                            callTranscript: transcriptFormatted,
+                            callDuration: String(durationSec),
+                            callStatus: finalCallStatus,
+                            callRecordingUrl: recordingUrl || ''
+                        }
 
-                console.log('[TwilioVoiceCall] Adding to state:', entry.key, '=', entry.value.substring(0, 100))
-
-                // Flowise already resolved variables like {{$nodeOutput.transcript}}
-                // so we just pass the value directly
-                stateMap[entry.key] = entry.value
-            }
-
-            if (Object.keys(stateMap).length > 0) {
-                console.log('[TwilioVoiceCall] Calling updateState with custom keys:', Object.keys(stateMap))
-                await options.updateState(stateMap)
+                        const outputKey = match[1]
+                        newState[key] = outputMap[outputKey] !== undefined ? outputMap[outputKey] : stateValue
+                    }
+                }
             }
         }
 
@@ -861,11 +855,21 @@ class TwilioVoiceCall_AgentFlows implements INode {
         manager.removeSession(sessionId)
 
         // Build the output object in Flowise's expected format
+        const formattedOutput = [
+            `callSid: ${callSid}`,
+            `callTranscript: ${transcriptFormatted || 'No transcript available'}`,
+            `callDuration: ${String(durationSec)}`,
+            `callStatus: ${finalCallStatus}`,
+            `callRecordingUrl: ${recordingUrl || 'Not available'}`
+        ].join('\n')
         const output: Record<string, any> = {
-            content: transcriptFormatted || 'No transcript available',
+            content: formattedOutput,
+            // Store individual fields for programmatic access if needed
             callSid,
-            status: finalCallStatus,
-            duration: durationSec,
+            callStatus: finalCallStatus,
+            callDuration: String(durationSec),
+            callRecordingUrl: recordingUrl || '',
+            callTranscript: transcriptFormatted || 'No transcript available',
             timeMetadata: {
                 start: endedSession?.startedAt || Date.now(),
                 end: Date.now(),
@@ -902,13 +906,7 @@ class TwilioVoiceCall_AgentFlows implements INode {
                 welcomeGreeting
             },
             output,
-            state: {
-                callSid,
-                callTranscript: transcriptFormatted,
-                callDuration: String(durationSec),
-                callStatus: finalCallStatus,
-                callRecordingUrl: recordingUrl
-            }
+            state: newState
         }
     }
 }
