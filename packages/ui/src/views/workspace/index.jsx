@@ -94,6 +94,7 @@ function ShowWorkspaceRow(props) {
     return (
         <Fragment key={props.rowKey}>
             <StyledTableRow hover sx={{ '&:last-child td, &:last-child th': { border: 0 } }}>
+                <StyledTableCell sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}>{props.workspace.id}</StyledTableCell>
                 <StyledTableCell component='th' scope='row'>
                     {props.workspace.name}
                     {currentUser.activeWorkspaceId === props.workspace.id && (
@@ -446,6 +447,7 @@ const Workspaces = () => {
                                         }}
                                     >
                                         <TableRow>
+                                            <TableCell>workspaceId</TableCell>
                                             <TableCell>Name</TableCell>
                                             <TableCell>Description</TableCell>
                                             <TableCell>Users</TableCell>
@@ -472,8 +474,14 @@ const Workspaces = () => {
                                                     <StyledTableCell>
                                                         <Skeleton variant='text' />
                                                     </StyledTableCell>
+                                                    <StyledTableCell>
+                                                        <Skeleton variant='text' />
+                                                    </StyledTableCell>
                                                 </StyledTableRow>
                                                 <StyledTableRow>
+                                                    <StyledTableCell>
+                                                        <Skeleton variant='text' />
+                                                    </StyledTableCell>
                                                     <StyledTableCell>
                                                         <Skeleton variant='text' />
                                                     </StyledTableCell>
