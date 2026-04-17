@@ -26,18 +26,18 @@ interface PendingSession {
 
 const pendingSessions = new Map<string, PendingSession>()
 
-interface InboundConfig {
+// ─── INBOUND CALL SUPPORT: Global config storage ────────────────────────────
+let globalInboundConfig: {
     systemPrompt: string
     welcomeGreeting: string
+    maxDurationSeconds: number
+    llmModel: any
     ttsProvider: string
     ttsVoice: string
     sttProvider: string
     language: string
-    maxDuration: number
-    llmModel: any
     publicBaseUrl: string
-}
-let inboundConfig: InboundConfig | null = null
+} | null = null
 
 let sharedServer: http.Server | null = null
 let sharedServerPort: number | null = null
@@ -55,6 +55,82 @@ async function getOrCreateSharedServer(): Promise<{ server: http.Server; port: n
 
     const server = http.createServer((req, res) => {
         const url = req.url || ''
+
+        // ─── INBOUND CALL HANDLER ────────────────────────────────────────────
+        // Handle inbound calls - /inbound route
+        const inboundMatch = url.match(/^\/inbound/)
+        if (inboundMatch) {
+            console.log('[TwilioVoiceCall] 📞 Inbound call received!')
+            
+            // Check if we have config set
+            if (!globalInboundConfig) {
+                console.error('[TwilioVoiceCall] ❌ No inbound config set! Run the node first to initialize.')
+                res.writeHead(503, { 'Content-Type': 'text/xml' })
+                res.end(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say>Sorry, the service is not ready yet. Please try again later.</Say>
+</Response>`)
+                return
+            }
+
+            // Create new session for this inbound call
+            const sessionId = uuidv4()
+            const manager = new ConversationRelaySessionManager()
+            
+            manager.createSession(sessionId, {
+                systemPrompt: globalInboundConfig.systemPrompt,
+                welcomeGreeting: globalInboundConfig.welcomeGreeting,
+                maxDurationSeconds: globalInboundConfig.maxDurationSeconds,
+                llmModel: globalInboundConfig.llmModel as any
+            })
+
+            console.log(`[TwilioVoiceCall] Created session ${sessionId} for inbound call`)
+
+            // Build WebSocket URL
+            const publicUrl = globalInboundConfig.publicBaseUrl.replace(/\/+$/, '')
+            const wsUrl = `${publicUrl.replace(/^http/, 'ws')}/ws/${sessionId}`
+
+            // Build TTS voice parameter
+            let ttsVoiceParam = 'Google.en-US-Standard-A'
+            if (globalInboundConfig.ttsProvider === 'elevenlabs') {
+                ttsVoiceParam = globalInboundConfig.ttsVoice || 'NYC9WEgkq1u4jiqBseQ9'
+            } else if (globalInboundConfig.ttsProvider === 'google') {
+                ttsVoiceParam = globalInboundConfig.ttsVoice || 'Google.en-US-Standard-A'
+            } else if (globalInboundConfig.ttsProvider === 'amazon') {
+                ttsVoiceParam = globalInboundConfig.ttsVoice || 'Joanna'
+            }
+
+            // Build TwiML
+            const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <ConversationRelay 
+            url="${wsUrl}"
+            voice="${ttsVoiceParam}"
+            dtmfDetection="true"
+            interruptible="true"
+            interruptByDtmf="*"
+            language="${globalInboundConfig.language}">
+            <Parameter name="ttsProvider" value="${globalInboundConfig.ttsProvider}" />
+            <Parameter name="sttProvider" value="${globalInboundConfig.sttProvider}" />
+        </ConversationRelay>
+    </Connect>
+</Response>`
+
+            // Store session
+            pendingSessions.set(sessionId, {
+                manager,
+                twiml
+            })
+
+            console.log(`[TwilioVoiceCall] ✅ Sending TwiML for inbound session ${sessionId}`)
+            console.log(`[TwilioVoiceCall] WebSocket URL: ${wsUrl}`)
+
+            res.writeHead(200, { 'Content-Type': 'text/xml' })
+            res.end(twiml)
+            return
+        }
+        // ─── END INBOUND CALL HANDLER ────────────────────────────────────────
 
         // Match /twiml/<sessionId>
         const twimlMatch = url.match(/^\/twiml\/([^/?]+)/)
@@ -97,77 +173,6 @@ async function getOrCreateSharedServer(): Promise<{ server: http.Server; port: n
                 res.end('Recording not found')
                 return
             }
-        }
-
-        // Match /inbound — Twilio incoming call webhook
-        if (url.match(/^\/inbound/)) {
-            if (!inboundConfig) {
-                // Return a valid TwiML response so Twilio doesn't mark the call as Busy
-                const notReadyTwiml = [
-                    '<?xml version="1.0" encoding="UTF-8"?>',
-                    '<Response>',
-                    '  <Say>The assistant is not available yet. Please run an outbound call from Flowise first, then try again.</Say>',
-                    '</Response>'
-                ].join('\n')
-                res.writeHead(200, { 'Content-Type': 'text/xml' })
-                res.end(notReadyTwiml)
-                console.warn('[TwilioVoiceCall] Inbound call received but no config registered yet. Run an outbound call first.')
-                return
-            }
-            let body = ''
-            req.on('data', (chunk: Buffer) => { body += chunk.toString() })
-            req.on('end', () => {
-                try {
-                    const params = new URLSearchParams(body)
-                    const callFrom = params.get('From') || 'unknown'
-                    const callSid = params.get('CallSid') || 'unknown'
-                    const sessionId = uuidv4()
-                    const manager = new ConversationRelaySessionManager()
-                    const cfg = inboundConfig!
-
-                    manager.createSession(sessionId, {
-                        systemPrompt: cfg.systemPrompt,
-                        welcomeGreeting: cfg.welcomeGreeting,
-                        maxDurationSeconds: cfg.maxDuration,
-                        llmModel: cfg.llmModel
-                    })
-
-                    const wsUrl = `${cfg.publicBaseUrl.replace(/^https?:\/\//, 'wss://')}/ws/${sessionId}`
-                    let crAttrs = `url="${wsUrl}" welcomeGreeting="${cfg.welcomeGreeting}"`
-                    crAttrs += ` ttsProvider="${cfg.ttsProvider}"`
-                    crAttrs += ` transcriptionProvider="${cfg.sttProvider}"`
-                    crAttrs += ` language="${cfg.language}"`
-                    if (cfg.ttsVoice) crAttrs += ` voice="${cfg.ttsVoice}"`
-
-                    const twiml = [
-                        '<?xml version="1.0" encoding="UTF-8"?>',
-                        '<Response>',
-                        '  <Connect>',
-                        `    <ConversationRelay ${crAttrs} />`,
-                        '  </Connect>',
-                        '</Response>'
-                    ].join('\n')
-
-                    pendingSessions.set(sessionId, { manager, twiml })
-                    console.log(`[TwilioVoiceCall] Inbound call from ${callFrom} (SID: ${callSid}) → session ${sessionId}`)
-                    console.log(`[TwilioVoiceCall] Inbound WebSocket: ${wsUrl}`)
-
-                    // Cleanup after maxDuration + buffer
-                    setTimeout(() => {
-                        pendingSessions.delete(sessionId)
-                        manager.removeSession(sessionId)
-                        console.log(`[TwilioVoiceCall] Inbound session ${sessionId} cleaned up`)
-                    }, (cfg.maxDuration + 120) * 1000)
-
-                    res.writeHead(200, { 'Content-Type': 'text/xml' })
-                    res.end(twiml)
-                } catch (e) {
-                    console.error('[TwilioVoiceCall] Inbound handler error:', e)
-                    res.writeHead(500)
-                    res.end('Internal error')
-                }
-            })
-            return
         }
 
         res.writeHead(200)
@@ -275,107 +280,87 @@ async function getCallRecordings(accountSid: string, authToken: string, callSid:
     // Retry logic to wait for recording to be ready
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         const response = await fetch(recordingsUrl, {
+            method: 'GET',
             headers: {
                 Authorization: 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64')
             }
         })
 
         if (!response.ok) {
-            throw new Error(`Failed to fetch recordings: ${response.status}`)
+            const errorText = await response.text()
+            throw new Error(`Failed to fetch recordings: ${response.status} ${response.statusText} - ${errorText}`)
         }
 
         const data = (await response.json()) as Record<string, any>
         const recordings = data.recordings || []
 
-        // Check if recordings exist and are ready
         if (recordings.length > 0) {
-            const recording = recordings[0]
-            if (recording.status === 'completed') {
-                console.log(`[TwilioVoiceCall] Recording ready after ${attempt + 1} attempt(s)`)
-                return recordings
-            }
-            console.log(`[TwilioVoiceCall] Recording status: ${recording.status}, waiting...`)
-        } else {
-            console.log(`[TwilioVoiceCall] No recordings found yet, attempt ${attempt + 1}/${maxRetries}`)
+            return recordings
         }
 
-        // Wait before retrying (exponential backoff)
+        // If no recordings yet and not last attempt, wait and retry
         if (attempt < maxRetries - 1) {
-            await new Promise((resolve) => setTimeout(resolve, 2000 + attempt * 1000))
+            console.log(`[TwilioVoiceCall] No recordings found yet, retrying in 2s (attempt ${attempt + 1}/${maxRetries})...`)
+            await new Promise((resolve) => setTimeout(resolve, 2000))
         }
     }
 
-    // Return whatever we have after max retries
-    const response = await fetch(recordingsUrl, {
-        headers: {
-            Authorization: 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64')
-        }
-    })
-    const data = (await response.json()) as Record<string, any>
-    return data.recordings || []
+    return [] // No recordings found after all retries
 }
 
-// Helper function to download recording from Twilio and save to public storage
-// This provides a publicly accessible URL without Twilio authentication
 async function downloadAndStoreRecording(accountSid: string, authToken: string, recording: any, publicBaseUrl: string): Promise<string> {
+    const fs = require('fs')
+    const path = require('path')
+
     try {
-        const recordingSid = recording.sid
-        const recordingUri = recording.uri
+        // 1. Construct the Twilio recording media URL
+        const recordingUrl = `https://api.twilio.com${recording.uri.replace('.json', '.mp3')}`
+        console.log('[TwilioVoiceCall] Downloading recording from:', recordingUrl)
 
-        // Check if recording is ready
-        if (recording.status !== 'completed') {
-            console.log(`[TwilioVoiceCall] Recording not ready yet (status: ${recording.status}), returning Twilio URL`)
-            // Return the Twilio media_url which can be accessed with auth
-            return recording.media_url || `https://api.twilio.com${recordingUri.replace('.json', '.mp3')}`
-        }
-
-        // Download the recording from Twilio using media_url
-        const downloadUrl = recording.media_url || `https://api.twilio.com${recordingUri.replace('.json', '.mp3')}`
-        console.log('[TwilioVoiceCall] Downloading recording from Twilio:', downloadUrl)
-
-        const response = await fetch(downloadUrl, {
+        // 2. Download the recording
+        const response = await fetch(recordingUrl, {
+            method: 'GET',
             headers: {
                 Authorization: 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64')
             }
         })
 
         if (!response.ok) {
-            console.log(`[TwilioVoiceCall] Failed to download recording: ${response.status}, returning Twilio URL`)
-            return recording.media_url || `https://api.twilio.com${recordingUri.replace('.json', '.mp3')}`
+            throw new Error(`Failed to download recording: ${response.status} ${response.statusText}`)
         }
 
-        const buffer = Buffer.from(await response.arrayBuffer())
+        const arrayBuffer = await response.arrayBuffer()
+        const buffer = Buffer.from(arrayBuffer)
         console.log('[TwilioVoiceCall] Downloaded recording, size:', buffer.length, 'bytes')
 
-        // Save to a public directory (adjust path based on your Flowise setup)
-        const fs = await import('fs')
-        const path = await import('path')
-
-        // Create recordings directory if it doesn't exist
-        // This should be in your public/static files directory
+        // 3. Save to public directory
         const recordingsDir = path.join(process.cwd(), 'public', 'recordings')
+
+        // Create directory if it doesn't exist
         if (!fs.existsSync(recordingsDir)) {
             fs.mkdirSync(recordingsDir, { recursive: true })
+            console.log('[TwilioVoiceCall] Created recordings directory:', recordingsDir)
         }
 
-        // Save file with recording SID as filename
-        const filename = `${recordingSid}.mp3`
+        // Generate filename
+        const filename = `${recording.sid}.mp3`
         const filepath = path.join(recordingsDir, filename)
-        fs.writeFileSync(filepath, new Uint8Array(buffer))
 
-        // Generate public URL
+        // Write file
+        fs.writeFileSync(filepath, buffer)
+        console.log('[TwilioVoiceCall] ✅ Saved recording to:', filepath)
+
+        // 4. Return public URL
         const publicUrl = `${publicBaseUrl}/recordings/${filename}`
-        console.log('[TwilioVoiceCall] ✅ Recording saved and accessible at:', publicUrl)
+        console.log('[TwilioVoiceCall] Public URL:', publicUrl)
 
         return publicUrl
     } catch (error) {
-        console.error('[TwilioVoiceCall] Error downloading and storing recording:', error)
-        // Fallback to Twilio media URL
-        return recording.media_url || `https://api.twilio.com${recording.uri.replace('.json', '.mp3')}`
+        console.error('[TwilioVoiceCall] ❌ Error downloading/storing recording:', error)
+        // Return empty string on error rather than throwing
+        return ''
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 class TwilioVoiceCall_AgentFlows implements INode {
     label: string
@@ -385,9 +370,8 @@ class TwilioVoiceCall_AgentFlows implements INode {
     type: string
     icon: string
     category: string
-    color: string
+    author: string
     baseClasses: string[]
-    documentation?: string
     credential: INodeParams
     inputs: INodeParams[]
     filePath?: string
@@ -395,92 +379,78 @@ class TwilioVoiceCall_AgentFlows implements INode {
     constructor() {
         this.label = 'Twilio Voice Call'
         this.name = 'twilioVoiceCall'
-        this.version = 2.0
-        this.type = 'Action'
+        this.version = 1.0
+        this.type = 'TwilioVoiceCall'
+        this.icon = 'twilio.svg'
         this.category = 'Agent Flows'
-        this.icon = 'twilioVoiceCall.svg'
-        this.description =
-            'Make an outbound phone call and hold a real-time AI conversation ' +
-            'with the caller using Twilio ConversationRelay and any Chat Model ' +
-            'available in your Digiworks instance.'
-        this.color = '#F22F46'
+        this.author = 'Flowise'
+        this.description = 'Make or receive AI-powered phone calls with Twilio ConversationRelay'
         this.baseClasses = [this.type]
-
         this.credential = {
-            label: 'Twilio Credential',
+            label: 'Connect Credential',
             name: 'credential',
             type: 'credential',
-            credentialNames: ['twilioCredential'],
-            description: 'Twilio Account SID and Auth Token'
+            credentialNames: ['twilioApi']
         }
-
         this.inputs = [
             {
                 label: 'Twilio Number',
                 name: 'twilioFromNumber',
                 type: 'string',
-                description: 'Your Twilio phone number (the "From" number) in E.164 format.',
-                placeholder: '+15551234567',
-                acceptVariable: true
+                description: 'Your Twilio phone number to make calls from (in E.164 format, e.g. +1234567890)',
+                placeholder: '+1234567890'
             },
             {
                 label: 'To Call Numbers',
                 name: 'twilioToNumber',
                 type: 'string',
-                description: 'The phone number(s) to trigger call to, in E.164 format. Comma-separated for multiple.',
-                placeholder: '+15559876543',
-                acceptVariable: true
+                description: 'Phone number(s) to call (E.164 format). For outbound calls only.',
+                placeholder: '+1234567890',
+                optional: false
             },
-
-            // --- Chat Model ------------------------------------------
             {
                 label: 'Chat Model',
-                name: 'twilioLLMModel',
+                name: 'llmModel',
                 type: 'asyncOptions',
-                loadMethod: 'listModels',
-                loadConfig: true,
-                description: 'Chat Model for prompting — powers the dynamic call response (like VAPI assistant).'
+                description: 'Select the language model for conversation',
+                loadMethod: 'listModels'
             },
-
-            // --- System Prompt ---------------------------------------
             {
                 label: 'System Prompt',
                 name: 'twilioSystemPrompt',
                 type: 'string',
-                description:
-                    'Prompt like in VAPI assistant for dynamic call response. ' +
-                    'Example: "You are a friendly customer-support agent. Answer questions briefly."',
-                rows: 8,
-                acceptVariable: true,
-                placeholder: 'You are a helpful voice assistant. Keep replies short and conversational.'
+                description: 'System instruction for the AI assistant',
+                rows: 6,
+                default: 'You are a helpful voice assistant. Keep replies short and conversational.',
+                placeholder: 'You are a helpful voice assistant. Keep replies short and conversational.',
+                optional: true
             },
-
-            // --- Welcome Greeting ------------------------------------
             {
                 label: 'Welcome Greeting',
                 name: 'twilioWelcomeGreeting',
                 type: 'string',
-                description: 'The first thing the AI says when the call connects.',
+                description: 'First message the AI will say when the call connects',
+                default: 'Hello! How can I help you today?',
                 placeholder: 'Hello! How can I help you today?',
-                acceptVariable: true,
                 optional: true
             },
 
-            // --- Enable Transcript -----------------------------------
+            // --- Recording & Transcript -----------------------------------
             {
                 label: 'Enable Transcript',
                 name: 'twilioEnableTranscript',
                 type: 'boolean',
-                description: 'If enabled, the full call transcript will be returned after the call ends.',
-                default: true
+                description: 'Return full conversation transcript',
+                default: true,
+                optional: true
             },
             {
                 label: 'Enable Recording',
-                name: 'enableRecording',
+                name: 'twilioEnableRecording',
                 type: 'boolean',
-                optional: true,
+                description: 'Record the full call audio',
                 default: true,
-                description: 'Record the phone call (default: true)'
+                optional: true
             },
 
             // --- Advanced settings -----------------------------------
@@ -633,177 +603,159 @@ class TwilioVoiceCall_AgentFlows implements INode {
         const language = (nodeData.inputs?.twilioLanguage as string) || 'en-US'
         const maxDuration = (nodeData.inputs?.twilioMaxDuration as number) || 300
         const publicBaseUrl = (nodeData.inputs?.publicBaseUrl as string)?.trim() || ''
-        const enableRecording = nodeData.inputs?.enableRecording !== false // FIX: was twilioEnableRecording
+
         const enableTranscript = nodeData.inputs?.twilioEnableTranscript !== false
+        const enableRecording = nodeData.inputs?.twilioEnableRecording !== false
 
-        console.log('[TwilioVoiceCall] enableRecording from inputs:', nodeData.inputs?.enableRecording)
-        console.log('[TwilioVoiceCall] enableRecording final value:', enableRecording)
-
-        if (!fromNumber) throw new Error('"Twilio Number" is required.')
+        // ------------------------------------------------------------------
+        // 3.  Validate inputs
+        // ------------------------------------------------------------------
+        if (!fromNumber) throw new Error('"Twilio Number" is required. This is the FROM number (your Twilio number).')
         if (!toNumber) throw new Error('"To Call Numbers" is required.')
         if (!publicBaseUrl) throw new Error('"Public Base URL" is required. Paste your public URL here.')
 
         // ------------------------------------------------------------------
-        // 3.  Load the LLM
+        // 4.  Get LLM model
         // ------------------------------------------------------------------
-        const selectedModel = nodeData.inputs?.twilioLLMModel as string
-        const selectedModelConfig = nodeData.inputs?.twilioLLMModelConfig as ICommonObject
+        const llmModelName = nodeData.inputs?.llmModel as string
+        if (!llmModelName) throw new Error('"Chat Model" is required. Please select a language model.')
 
-        if (!selectedModel) throw new Error('A Chat Model must be selected.')
+        const componentNodes = options.componentNodes as { [key: string]: INode }
+        const llmNode = componentNodes[llmModelName]
+        if (!llmNode) throw new Error(`Chat model node "${llmModelName}" not found. Check your flow configuration.`)
 
-        const modelInstanceFilePath = (options.componentNodes as any)[selectedModel].filePath as string
-        const modelModule = await import(modelInstanceFilePath)
-        const newModelInstance = new modelModule.nodeClass()
-        // Debug: show what keys are in selectedModelConfig so we can confirm credential passing
-        console.log('[TwilioVoiceCall] selectedModelConfig keys:', Object.keys(selectedModelConfig || {}))
-
-        const modelNodeData = {
-            ...nodeData,
-            // Pass the credential ID stored in the model config so Flowise
-            // can look up the API key from its credential store
-            credential:
-                selectedModelConfig?.['FLOWISE_CREDENTIAL_ID'] ||
-                selectedModelConfig?.['DIGIWORKS_CREDENTIAL_ID'] ||
-                selectedModelConfig?.['credential'] ||
-                nodeData.credential,
-            inputs: { ...nodeData.inputs, ...selectedModelConfig }
+        if (!llmNode.run) {
+            throw new Error(`Chat model "${llmModelName}" does not have a run method.`)
         }
-        const llmModel = await newModelInstance.init(modelNodeData, '', options)
 
-        // ------------------------------------------------------------------
-        // 3b. Register inbound config (so incoming calls use the same settings)
-        // ------------------------------------------------------------------
-        inboundConfig = {
-            systemPrompt,
-            welcomeGreeting,
-            ttsProvider,
-            ttsVoice,
-            sttProvider,
-            language,
-            maxDuration,
-            llmModel,
-            publicBaseUrl: publicBaseUrl.replace(/\/+$/, '')
+        const llmModelInstance = await llmNode.run(nodeData, '', options)
+        if (!llmModelInstance) {
+            throw new Error('Failed to initialize LLM. Ensure the selected chat model is properly configured.')
         }
 
         // ------------------------------------------------------------------
-        // 4.  Start (or reuse) the shared mini bridge server
+        // 5.  Start or reuse the shared bridge server
         // ------------------------------------------------------------------
         const { port } = await getOrCreateSharedServer()
 
-        // Normalise base URL — strip trailing slash
-        const baseUrl = publicBaseUrl.replace(/\/+$/, '')
-
         // ------------------------------------------------------------------
-        // 5.  Create session
+        // 6.  Create session & TwiML
         // ------------------------------------------------------------------
         const sessionId = uuidv4()
         const manager = new ConversationRelaySessionManager()
 
-        manager.createSession(sessionId, {
+        const session = manager.createSession(sessionId, {
             systemPrompt,
             welcomeGreeting,
             maxDurationSeconds: maxDuration,
-            llmModel
+            llmModel: llmModelInstance as any
         })
 
-        // ------------------------------------------------------------------
-        // 6.  Build TwiML
-        // ------------------------------------------------------------------
+        console.log(`[TwilioVoiceCall] Created session ${sessionId}`)
+
+        // Build the URLs
+        const baseUrl = publicBaseUrl.replace(/\/+$/, '')
         const twimlUrl = `${baseUrl}/twiml/${sessionId}`
-        const wsUrl = `${baseUrl.replace(/^https?:\/\//, 'wss://')}/ws/${sessionId}`
+        const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/ws/${sessionId}`
 
-        let crAttrs = `url="${wsUrl}" welcomeGreeting="${welcomeGreeting}"`
-        crAttrs += ` ttsProvider="${ttsProvider}"`
-        crAttrs += ` transcriptionProvider="${sttProvider}"`
-        crAttrs += ` language="${language}"`
-        if (ttsVoice) crAttrs += ` voice="${ttsVoice}"`
+        // Determine TTS voice
+        let voiceParam = 'Google.en-US-Standard-A'
+        if (ttsProvider === 'elevenlabs') {
+            voiceParam = ttsVoice || 'NYC9WEgkq1u4jiqBseQ9'
+        } else if (ttsProvider === 'google') {
+            voiceParam = ttsVoice || 'Google.en-US-Standard-A'
+        } else if (ttsProvider === 'amazon') {
+            voiceParam = ttsVoice || 'Joanna'
+        }
 
-        const twiml = [
-            '<?xml version="1.0" encoding="UTF-8"?>',
-            '<Response>',
-            '  <Connect>',
-            `    <ConversationRelay ${crAttrs} />`,
-            '  </Connect>',
-            '</Response>'
-        ].join('\n')
+        // Build TwiML
+        let recordParam = ''
+        if (enableRecording) {
+            recordParam = ` record="true" recordingStatusCallback="${baseUrl}/recording-status"`
+        }
 
-        // Register in pending map so server handlers can find it
-        pendingSessions.set(sessionId, { manager, twiml })
+        const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect${recordParam}>
+        <ConversationRelay 
+            url="${wsUrl}"
+            voice="${voiceParam}"
+            dtmfDetection="true"
+            interruptible="true"
+            interruptByDtmf="*"
+            language="${language}">
+            <Parameter name="ttsProvider" value="${ttsProvider}" />
+            <Parameter name="sttProvider" value="${sttProvider}" />
+        </ConversationRelay>
+    </Connect>
+</Response>`
 
-        console.log(`[TwilioVoiceCall] ── Bridge server port : ${port}`)
-        console.log(`[TwilioVoiceCall] ── TwiML URL          : ${twimlUrl}`)
-        console.log(`[TwilioVoiceCall] ── WebSocket URL      : ${wsUrl}`)
-        console.log(`[TwilioVoiceCall] ── Session ID         : ${sessionId}`)
-        console.log(`[TwilioVoiceCall] ── Inbound webhook    : ${baseUrl}/inbound  ← set this in Twilio Console`)
+        pendingSessions.set(sessionId, {
+            manager,
+            twiml
+        })
+
+        console.log(`[TwilioVoiceCall] TwiML URL: ${twimlUrl}`)
+        console.log(`[TwilioVoiceCall] WebSocket URL: ${wsUrl}`)
         console.log(`[TwilioVoiceCall] ── ACTION NEEDED: make sure ngrok is tunnelling port ${port}`)
 
-        // Safety cleanup timer (5 min) in case call never connects
-        const cleanupTimer = setTimeout(() => {
-            pendingSessions.delete(sessionId)
-            manager.removeSession(sessionId)
-            console.warn(`[TwilioVoiceCall] Session ${sessionId} timed out`)
-        }, 5 * 60 * 1000)
+        // ------------------------------------------------------------------
+        // 7.  Place the call via Twilio API
+        // ------------------------------------------------------------------
+        const callUrl = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls.json`
 
-        // ------------------------------------------------------------------
-        // 7.  Initiate outbound call via Twilio REST API
-        // ------------------------------------------------------------------
-        const callApiUrl = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls.json`
-        const callBody: Record<string, string> = {
+        const callParams: Record<string, string> = {
             From: fromNumber,
             To: toNumber,
             Url: twimlUrl,
-            Method: 'GET',
-            Record: enableRecording ? 'true' : 'false'
+            Method: 'POST',
+            StatusCallback: `${baseUrl}/call-status`,
+            StatusCallbackMethod: 'POST'
         }
 
-        console.log('[TwilioVoiceCall] Call API body:', JSON.stringify(callBody, null, 2))
+        if (enableRecording) {
+            callParams.Record = 'true'
+            callParams.RecordingStatusCallback = `${baseUrl}/recording-status`
+            callParams.RecordingStatusCallbackMethod = 'POST'
+        }
 
-        const callResponse = await fetch(callApiUrl, {
+        console.log('[TwilioVoiceCall] Making call with params:', callParams)
+
+        const callResponse = await fetch(callUrl, {
             method: 'POST',
             headers: {
-                Authorization: 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64'),
-                'Content-Type': 'application/x-www-form-urlencoded'
+                'Content-Type': 'application/x-www-form-urlencoded',
+                Authorization: 'Basic ' + Buffer.from(`${accountSid}:${authToken}`).toString('base64')
             },
-            body: urlEncode(callBody)
+            body: urlEncode(callParams)
         })
 
-        const callResponseText = await callResponse.text()
-        let callJson: Record<string, any>
-        try {
-            callJson = JSON.parse(callResponseText)
-        } catch (_) {
-            clearTimeout(cleanupTimer)
-            pendingSessions.delete(sessionId)
-            manager.removeSession(sessionId)
-            throw new Error(`Twilio API returned non-JSON (${callResponse.status}): ${callResponseText}`)
-        }
-
         if (!callResponse.ok) {
-            clearTimeout(cleanupTimer)
-            pendingSessions.delete(sessionId)
-            manager.removeSession(sessionId)
-            throw new Error(`Twilio call failed ${callJson.code || callResponse.status}: ${callJson.message || callResponseText}`)
+            const errorText = await callResponse.text()
+            throw new Error(`Twilio API error: ${callResponse.status} ${callResponse.statusText} - ${errorText}`)
         }
 
-        const callSid = callJson.sid
-        console.log(`[TwilioVoiceCall] Call initiated — SID: ${callSid}, status: ${callJson.status}`)
+        const callData = (await callResponse.json()) as Record<string, any>
+        const callSid = callData.sid as string
+
+        console.log(`[TwilioVoiceCall] Call initiated — SID: ${callSid}`)
 
         // ------------------------------------------------------------------
-        // 8.  Wait for call to finish WITH TIMEOUT for unanswered calls
-        //     If the callee doesn't pick up, Twilio won't open the WebSocket
-        //     but the status callback will fire. We need a timeout to prevent
-        //     hanging forever waiting for a WebSocket that will never connect.
+        // 8.  Wait for the call to complete
         // ------------------------------------------------------------------
-        console.log('[TwilioVoiceCall] Waiting for call to end...')
+        // Set a timeout to clean up if call never connects
+        const cleanupTimer = setTimeout(
+            () => {
+                if (!session.ended) {
+                    console.log('[TwilioVoiceCall] Call timed out or never connected')
+                    manager.endSession(sessionId, 'Timeout')
+                }
+            },
+            (maxDuration + 60) * 1000
+        )
 
-        // Poll Twilio call status to detect unanswered/busy/failed calls
-        let callCompleted = false
+        // Poll Twilio for call status to detect busy/no-answer/failed
         const statusCheckInterval = setInterval(async () => {
-            if (callCompleted) {
-                clearInterval(statusCheckInterval)
-                return
-            }
-
             try {
                 const statusUrl = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls/${callSid}.json`
                 const statusResponse = await fetch(statusUrl, {
@@ -813,14 +765,14 @@ class TwilioVoiceCall_AgentFlows implements INode {
                 })
 
                 if (statusResponse.ok) {
-                    const callStatus = await statusResponse.json()
-                    console.log(`[TwilioVoiceCall] Call status: ${callStatus.status}`)
+                    const callStatus = (await statusResponse.json()) as Record<string, any>
+                    const status = callStatus.status
 
-                    // Check if call ended without WebSocket connection (unanswered, busy, etc)
-                    if (['busy', 'no-answer', 'failed', 'canceled', 'completed'].includes(callStatus.status)) {
-                        clearInterval(statusCheckInterval)
-                        callCompleted = true
-
+                    // End session immediately if call failed/busy/no-answer
+                    if (status === 'busy' || status === 'no-answer' || status === 'failed' || status === 'canceled') {
+                        console.log(`[TwilioVoiceCall] Call ${status} - ending session`)
+                        manager.endSession(sessionId, `Call ${status}`)
+                    } else if (status === 'completed') {
                         // If completed but no transcript, it means call wasn't answered
                         const sess = manager.getSession(sessionId)
                         if (callStatus.status !== 'completed' || !sess?.transcript?.length) {
@@ -955,6 +907,25 @@ class TwilioVoiceCall_AgentFlows implements INode {
         pendingSessions.delete(sessionId)
         manager.removeSession(sessionId)
 
+        // ─── STORE CONFIG FOR INBOUND CALLS ──────────────────────────────
+        // This allows the /inbound endpoint to use the same configuration
+        globalInboundConfig = {
+            systemPrompt,
+            welcomeGreeting,
+            maxDurationSeconds: maxDuration,
+            llmModel: llmModelInstance,
+            ttsProvider,
+            ttsVoice,
+            sttProvider,
+            language,
+            publicBaseUrl
+        }
+
+        console.log('[TwilioVoiceCall] ✅ Inbound config stored. Ready to receive calls at:')
+        console.log(`[TwilioVoiceCall] 📞 ${publicBaseUrl}/inbound`)
+        console.log('[TwilioVoiceCall] Configure this URL in your Twilio phone number webhook!')
+        // ─────────────────────────────────────────────────────────────────
+
         // Build the output object in Flowise's expected format
         const formattedOutput = [
             `callSid: ${callSid}`,
@@ -1013,14 +984,3 @@ class TwilioVoiceCall_AgentFlows implements INode {
 }
 
 module.exports = { nodeClass: TwilioVoiceCall_AgentFlows }
-
-// Eagerly start the bridge server when this module loads so inbound calls
-// work as soon as Flowise starts — no outbound call required to open the port.
-;(async () => {
-    try {
-        const { port } = await getOrCreateSharedServer()
-        console.log(`[TwilioVoiceCall] Bridge server pre-started on port ${port} — ready for inbound calls`)
-    } catch (e) {
-        console.error('[TwilioVoiceCall] Could not pre-start bridge server:', e)
-    }
-})()

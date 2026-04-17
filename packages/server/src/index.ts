@@ -169,7 +169,7 @@ export class App {
         this.app.use(cors(getCorsOptions()))
 
         // Parse cookies
-        this.app.use(cookieParser())
+        this.app.use(cookieParser() as any)
 
         // Allow embedding from specified domains.
         this.app.use((req, res, next) => {

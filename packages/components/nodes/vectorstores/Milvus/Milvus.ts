@@ -378,7 +378,7 @@ const similaritySearchVectorWithScore = async (query: number[], k: number, vecto
         throw new Error(`Error searching data: ${JSON.stringify(searchResp)}`)
     }
     const results: [Document, number][] = []
-    searchResp.results.forEach((result) => {
+    ;(searchResp.results as unknown as Array<{ [key: string]: any; score: number }>).forEach((result) => {
         const fields = {
             pageContent: '',
             metadata: {} as Record<string, any>
