@@ -155,14 +155,14 @@ class File_DocumentLoaders implements INode {
                 for (const file of files) {
                     if (!file) continue
                     const fileData = await getFileFromStorage(file, orgId, chatflowid, options.chatId)
-                    const blob = new Blob([fileData])
+                    const blob = new Blob([fileData as unknown as BlobPart])
                     fileBlobs.push({ blob, ext: file.split('.').pop() || '' })
                 }
             } else {
                 for (const file of files) {
                     if (!file) continue
                     const fileData = await getFileFromStorage(file, orgId, chatflowid)
-                    const blob = new Blob([fileData])
+                    const blob = new Blob([fileData as unknown as BlobPart])
                     fileBlobs.push({ blob, ext: file.split('.').pop() || '' })
                 }
             }

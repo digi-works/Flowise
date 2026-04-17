@@ -588,8 +588,8 @@ export const executeFlow = async ({
                     appDataSource,
                     databaseEntities
                 })
-                if (generatedFollowUpPrompts?.questions) {
-                    apiMessage.followUpPrompts = JSON.stringify(generatedFollowUpPrompts.questions)
+                if ((generatedFollowUpPrompts as any)?.questions) {
+                    apiMessage.followUpPrompts = JSON.stringify((generatedFollowUpPrompts as any).questions)
                 }
             }
             const chatMessage = await utilAddChatMessage(apiMessage, appDataSource)
@@ -793,8 +793,8 @@ export const executeFlow = async ({
                 appDataSource,
                 databaseEntities
             })
-            if (followUpPrompts?.questions) {
-                apiMessage.followUpPrompts = JSON.stringify(followUpPrompts.questions)
+            if ((followUpPrompts as any)?.questions) {
+                apiMessage.followUpPrompts = JSON.stringify((followUpPrompts as any).questions)
             }
         }
 
