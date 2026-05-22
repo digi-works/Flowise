@@ -24,6 +24,13 @@ import { IconPlus, IconFileUpload } from '@tabler/icons-react'
 import AssistantEmptySVG from '@/assets/images/assistant_empty.svg'
 import { gridSpacing } from '@/store/constant'
 
+const getAssistantDisplayName = (data) => {
+    const parsed = JSON.parse(data.details)
+    const name = (parsed?.name || '').trim()
+    if (name) return name
+    return parsed?.id || data.id || 'Unnamed Assistant'
+}
+
 // ==============================|| OpenAIAssistantLayout ||============================== //
 
 const OpenAIAssistantLayout = () => {
@@ -87,8 +94,7 @@ const OpenAIAssistantLayout = () => {
     }
 
     function filterAssistants(data) {
-        const parsedData = JSON.parse(data.details)
-        return parsedData && parsedData.name && parsedData.name.toLowerCase().indexOf(search.toLowerCase()) > -1
+        return getAssistantDisplayName(data).toLowerCase().indexOf(search.toLowerCase()) > -1
     }
 
     useEffect(() => {
@@ -106,6 +112,8 @@ const OpenAIAssistantLayout = () => {
             setError(getAllAssistantsApi.error)
         }
     }, [getAllAssistantsApi.error])
+
+    const filteredAssistants = getAllAssistantsApi.data?.filter(filterAssistants) ?? []
 
     return (
         <>
@@ -150,21 +158,23 @@ const OpenAIAssistantLayout = () => {
                             </Box>
                         ) : (
                             <Box display='grid' gridTemplateColumns='repeat(3, 1fr)' gap={gridSpacing}>
-                                {getAllAssistantsApi.data &&
-                                    getAllAssistantsApi.data?.filter(filterAssistants).map((data, index) => (
+                                {filteredAssistants.map((data) => {
+                                    const parsed = JSON.parse(data.details)
+                                    return (
                                         <ItemCard
                                             data={{
-                                                name: JSON.parse(data.details)?.name,
-                                                description: JSON.parse(data.details)?.instructions,
+                                                name: getAssistantDisplayName(data),
+                                                description: parsed?.instructions,
                                                 iconSrc: data.iconSrc
                                             }}
-                                            key={index}
+                                            key={data.id}
                                             onClick={() => edit(data)}
                                         />
-                                    ))}
+                                    )
+                                })}
                             </Box>
                         )}
-                        {!isLoading && (!getAllAssistantsApi.data || getAllAssistantsApi.data.length === 0) && (
+                        {!isLoading && filteredAssistants.length === 0 && (
                             <Stack sx={{ alignItems: 'center', justifyContent: 'center' }} flexDirection='column'>
                                 <Box sx={{ p: 2, height: 'auto' }}>
                                     <img
