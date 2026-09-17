@@ -115,7 +115,9 @@ async function getOrCreateSharedServer(): Promise<{ server: http.Server; port: n
                 return
             }
             let body = ''
-            req.on('data', (chunk: Buffer) => { body += chunk.toString() })
+            req.on('data', (chunk: Buffer) => {
+                body += chunk.toString()
+            })
             req.on('end', () => {
                 try {
                     const params = new URLSearchParams(body)
@@ -393,7 +395,7 @@ class TwilioVoiceCall_AgentFlows implements INode {
     filePath?: string
 
     constructor() {
-        this.label = 'Twilio Voice Call'
+        this.label = 'Voice agent'
         this.name = 'twilioVoiceCall'
         this.version = 2.0
         this.type = 'Action'
@@ -545,7 +547,7 @@ class TwilioVoiceCall_AgentFlows implements INode {
                 label: 'Public Base URL',
                 name: 'publicBaseUrl',
                 type: 'string',
-                description: 'The public URL where Twilio can reach your server',
+                description: 'The public URL where Voice agent can reach your server',
                 placeholder: 'https://your-domain.com or https://xxxx.ngrok.io',
                 optional: false,
                 acceptVariable: true
@@ -615,7 +617,7 @@ class TwilioVoiceCall_AgentFlows implements INode {
         const authToken = getCredentialParam('twilioAuthToken', credentialData, nodeData)
 
         if (!accountSid || !authToken) {
-            throw new Error('Twilio credential is missing. Please configure Account SID and Auth Token.')
+            throw new Error('Voice agent credentials are missing. Please configure Account SID and Auth Token.')
         }
 
         // ------------------------------------------------------------------
@@ -639,7 +641,7 @@ class TwilioVoiceCall_AgentFlows implements INode {
         console.log('[TwilioVoiceCall] enableRecording from inputs:', nodeData.inputs?.enableRecording)
         console.log('[TwilioVoiceCall] enableRecording final value:', enableRecording)
 
-        if (!fromNumber) throw new Error('"Twilio Number" is required.')
+        if (!fromNumber) throw new Error('"Voice agent Number" is required.')
         if (!toNumber) throw new Error('"To Call Numbers" is required.')
         if (!publicBaseUrl) throw new Error('"Public Base URL" is required. Paste your public URL here.')
 
@@ -775,14 +777,16 @@ class TwilioVoiceCall_AgentFlows implements INode {
             clearTimeout(cleanupTimer)
             pendingSessions.delete(sessionId)
             manager.removeSession(sessionId)
-            throw new Error(`Twilio API returned non-JSON (${callResponse.status}): ${callResponseText}`)
+            throw new Error(`Voice agent service API returned non-JSON (${callResponse.status}): ${callResponseText}`)
         }
 
         if (!callResponse.ok) {
             clearTimeout(cleanupTimer)
             pendingSessions.delete(sessionId)
             manager.removeSession(sessionId)
-            throw new Error(`Twilio call failed ${callJson.code || callResponse.status}: ${callJson.message || callResponseText}`)
+            throw new Error(
+                `Voice agent service API call failed ${callJson.code || callResponse.status}: ${callJson.message || callResponseText}`
+            )
         }
 
         const callSid = callJson.sid
